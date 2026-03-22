@@ -1,22 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const TRADING_DAYS_IN_YEAR = 252;
+const HISTORY_POINTS = TRADING_DAYS_IN_YEAR + 1;
 
 const ANNUAL_PROFILE = {
-  stock: { minReturn: 0.1, maxReturn: 0.2, minVol: 0.18, maxVol: 0.27, basePrice: 18000 },
-  alt: { minReturn: 0.07, maxReturn: 0.15, minVol: 0.12, maxVol: 0.2, basePrice: 13000 },
-  mixed: { minReturn: 0.06, maxReturn: 0.11, minVol: 0.08, maxVol: 0.13, basePrice: 11000 },
-  bond: { minReturn: 0.045, maxReturn: 0.085, minVol: 0.05, maxVol: 0.09, basePrice: 10500 },
-  cash: { minReturn: 0.03, maxReturn: 0.045, minVol: 0.015, maxVol: 0.03, basePrice: 10200 },
+  stock:       { minReturn: 0.1,  maxReturn: 0.2,   minVol: 0.18, maxVol: 0.27, basePrice: 18000 },
+  alternative: { minReturn: 0.07, maxReturn: 0.15,  minVol: 0.12, maxVol: 0.2,  basePrice: 13000 },
+  mixed:       { minReturn: 0.06, maxReturn: 0.11,  minVol: 0.08, maxVol: 0.13, basePrice: 11000 },
+  bond:        { minReturn: 0.045,maxReturn: 0.085, minVol: 0.05, maxVol: 0.09, basePrice: 10500 },
+  cash:        { minReturn: 0.03, maxReturn: 0.045, minVol: 0.015,maxVol: 0.03, basePrice: 10200 },
 };
 
 function seededRandom(seed) {
   let value = seed % 2147483647;
-
-  if (value <= 0) {
-    value += 2147483646;
-  }
-
+  if (value <= 0) value += 2147483646;
   return () => {
     value = (value * 48271) % 2147483647;
     return (value - 1) / 2147483646;
@@ -24,7 +21,7 @@ function seededRandom(seed) {
 }
 
 function randomBetween(rng, min, max) {
-  return min + ((max - min) * rng());
+  return min + (max - min) * rng();
 }
 
 function randomNormal(rng) {
@@ -44,14 +41,12 @@ function generateFallbackSeries(code, type) {
   const dailyVol = annualVolatility / Math.sqrt(TRADING_DAYS_IN_YEAR);
 
   let price = profile.basePrice * randomBetween(rng, 0.85, 1.2);
-
   const closes = [];
 
-  for (let i = 0; i < TRADING_DAYS_IN_YEAR; i += 1) {
+  for (let i = 0; i < HISTORY_POINTS; i++) {
     const shockWindow = i > 92 && i < 112;
     const stress = shockWindow ? randomBetween(rng, -0.0055, -0.0015) : 0;
-    const dailyReturn = dailyDrift + (randomNormal(rng) * dailyVol) + stress;
-
+    const dailyReturn = dailyDrift + randomNormal(rng) * dailyVol + stress;
     price = Math.max(price * (1 + dailyReturn), profile.basePrice * 0.32);
     closes.push(Number(price.toFixed(2)));
   }
@@ -74,94 +69,57 @@ function buildCandidateUrls(code, type) {
   return [
     `${normalizedBase}/api/etf/history?code=${code}&range=1y`,
     `${normalizedBase}/api/etf/${code}/history?range=1y`,
-    `${normalizedBase}/api/etf/close-series?code=${code}&days=${TRADING_DAYS_IN_YEAR}`,
+    `${normalizedBase}/api/etf/close-series?code=${code}&days=${HISTORY_POINTS}`,
   ];
 }
 
 function extractNumber(payload) {
-  if (!payload || typeof payload !== 'object') {
-    return null;
-  }
-
+  if (!payload || typeof payload !== 'object') return null;
   const direct = [
-    payload.currentPrice,
-    payload.price,
-    payload.close,
-    payload.last,
-    payload.value,
-    payload?.data?.currentPrice,
-    payload?.data?.price,
+    payload.currentPrice, payload.price, payload.close,
+    payload.last, payload.value,
+    payload?.data?.currentPrice, payload?.data?.price,
     payload?.result?.currentPrice,
   ];
-
   for (const value of direct) {
     const numeric = Number(value);
-    if (Number.isFinite(numeric) && numeric > 0) {
-      return numeric;
-    }
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
   }
-
   return null;
 }
 
 function normalizeCloses(raw) {
   const values = raw
-    .map((value) => {
-      if (typeof value === 'number') {
-        return value;
-      }
-
-      if (value && typeof value === 'object') {
-        return Number(value.close ?? value.price ?? value.value);
-      }
-
-      return Number(value);
+    .map((v) => {
+      if (typeof v === 'number') return v;
+      if (v && typeof v === 'object') return Number(v.close ?? v.price ?? v.value);
+      return Number(v);
     })
-    .filter((value) => Number.isFinite(value) && value > 0);
-
-  if (values.length < 120) {
-    return null;
-  }
-
-  return values;
+    .filter((v) => Number.isFinite(v) && v > 0);
+  return values.length >= 120 ? values : null;
 }
 
 function extractCloseSeries(payload) {
-  if (Array.isArray(payload)) {
-    return normalizeCloses(payload);
-  }
-
+  if (Array.isArray(payload)) return normalizeCloses(payload);
   const possibilities = [
-    payload?.closes,
-    payload?.closePrices,
-    payload?.prices,
-    payload?.data?.closes,
-    payload?.data?.prices,
-    payload?.result?.closes,
+    payload?.closes, payload?.closePrices, payload?.prices,
+    payload?.data?.closes, payload?.data?.prices, payload?.result?.closes,
   ];
-
   for (const option of possibilities) {
     if (Array.isArray(option)) {
       const normalized = normalizeCloses(option);
-      if (normalized) {
-        return normalized;
-      }
+      if (normalized) return normalized;
     }
   }
-
   return null;
 }
 
 async function fetchJsonWithTimeout(url, timeout = 2500) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
-
   try {
     const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) {
-      return null;
-    }
-
+    if (!response.ok) return null;
     return await response.json();
   } catch {
     return null;
@@ -174,40 +132,29 @@ async function fetchCurrentPrice(code) {
   for (const url of buildCandidateUrls(code, 'current')) {
     const payload = await fetchJsonWithTimeout(url);
     const price = extractNumber(payload);
-
-    if (Number.isFinite(price)) {
-      return price;
-    }
+    if (Number.isFinite(price)) return price;
   }
-
   return null;
 }
 
 async function fetchOneYearCloses(code) {
+  let bestEffortCloses = null;
   for (const url of buildCandidateUrls(code, 'history')) {
     const payload = await fetchJsonWithTimeout(url, 3000);
     const closes = extractCloseSeries(payload);
-
-    if (closes && closes.length) {
-      return closes;
+    if (closes && closes.length > TRADING_DAYS_IN_YEAR) return closes;
+    if (closes && (!bestEffortCloses || closes.length > bestEffortCloses.length)) {
+      bestEffortCloses = closes;
     }
   }
-
-  return null;
+  return bestEffortCloses?.length > TRADING_DAYS_IN_YEAR ? bestEffortCloses : null;
 }
 
 function buildInitialState(etfs) {
   return Object.fromEntries(
     etfs.map((etf) => [
       etf.code,
-      {
-        ...etf,
-        currentPrice: null,
-        closes: [],
-        loading: true,
-        isFallback: false,
-        error: null,
-      },
+      { ...etf, currentPrice: null, closes: [], loading: true, isFallback: false, error: null },
     ]),
   );
 }
@@ -227,23 +174,17 @@ export function useEtfData(etfs) {
         ]);
 
         const closesFromApi = closeResult.status === 'fulfilled' ? closeResult.value : null;
-        const closes = closesFromApi?.length ? closesFromApi : generateFallbackSeries(etf.code, etf.type);
+        const closes = closesFromApi?.length
+          ? closesFromApi
+          : generateFallbackSeries(etf.code, etf.type);
 
         const priceFromApi = priceResult.status === 'fulfilled' ? priceResult.value : null;
         const currentPrice = Number.isFinite(priceFromApi) ? priceFromApi : closes[closes.length - 1];
-
         const isFallback = !closesFromApi || !Number.isFinite(priceFromApi);
 
         return [
           etf.code,
-          {
-            ...etf,
-            currentPrice,
-            closes,
-            loading: false,
-            isFallback,
-            error: null,
-          },
+          { ...etf, currentPrice, closes, loading: false, isFallback, error: null },
         ];
       }),
     );
@@ -254,35 +195,15 @@ export function useEtfData(etfs) {
 
   useEffect(() => {
     let mounted = true;
-
-    (async () => {
-      if (!mounted) {
-        return;
-      }
-
-      await load();
-    })();
-
-    return () => {
-      mounted = false;
-    };
+    (async () => { if (mounted) await load(); })();
+    return () => { mounted = false; };
   }, [load]);
 
   const stats = useMemo(() => {
     const values = Object.values(etfDataByCode);
     const fallbackCount = values.filter((item) => item.isFallback).length;
-
-    return {
-      total: values.length,
-      fallbackCount,
-      apiCount: values.length - fallbackCount,
-    };
+    return { total: values.length, fallbackCount, apiCount: values.length - fallbackCount };
   }, [etfDataByCode]);
 
-  return {
-    loading,
-    etfDataByCode,
-    stats,
-    reload: load,
-  };
+  return { loading, etfDataByCode, stats, reload: load };
 }
